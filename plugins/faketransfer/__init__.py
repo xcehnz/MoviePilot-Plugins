@@ -28,7 +28,7 @@ class FakeTransfer(_PluginBase):
     # 插件图标
     plugin_icon = "faketransfer.png"
     # 插件版本
-    plugin_version = "1.1"
+    plugin_version = "0.2"
     # 插件作者
     plugin_author = "xcehnz"
     # 作者主页
@@ -398,9 +398,8 @@ class FakeTransfer(_PluginBase):
         if ths:
             logger.error(f'文件{file["path"]}已经转移过, 不再转移')
             return
-
-        file_temp_dir = os.path.join(settings.TEMP_PATH, os.path.dirname(file['path']))
-        file_temp_path = os.path.join(str(file_temp_dir), file['name'])
+        file_temp_dir = settings.TEMP_PATH.joinpath(os.path.dirname(file['path'])[1:])
+        file_temp_path = file_temp_dir / file['name']
 
         if not os.path.exists(file_temp_dir):
             os.makedirs(file_temp_dir)
@@ -435,9 +434,12 @@ class FakeTransfer(_PluginBase):
                           f"回复：```\n/redo {his.id} [tmdbid]|[类型]\n``` 手动识别转移。"
                 ))
             return
+        fake_dir = settings.LIBRARY_PATHS[0] / 'fake'
+        if not fake_dir.exists():
+            fake_dir.mkdir(parents=True, exist_ok=True)
 
         transferinfo = self.chain.transfer(path=file_path, meta=file_meta, mediainfo=mediainfo,
-                                           transfer_type=self._transfer_type)
+                                           transfer_type=self._transfer_type, target=fake_dir)
         if not transferinfo:
             logger.error(f"文件转移运行失败：{file['path']}")
             return
