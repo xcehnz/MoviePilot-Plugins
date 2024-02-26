@@ -2,7 +2,6 @@ import json
 import os
 import pickle
 from datetime import datetime
-from pathlib import Path
 from typing import Any, List, Dict, Tuple, Optional
 
 import requests
@@ -12,13 +11,14 @@ from fastapi import Depends, Request
 
 from app import schemas
 from app.core.config import settings
+from app.chain.transfer import TransferChain
+from app.core.context import MediaInfo
 from app.core.metainfo import MetaInfoPath
 from app.core.security import verify_uri_apikey
 from app.db.transferhistory_oper import TransferHistoryOper
 from app.log import logger
 from app.plugins import _PluginBase
-from app.schemas import Notification, NotificationType
-
+from app.schemas.types import MediaType
 
 class FakeTransfer(_PluginBase):
     # 插件名称
@@ -28,7 +28,7 @@ class FakeTransfer(_PluginBase):
     # 插件图标
     plugin_icon = "faketransfer.png"
     # 插件版本
-    plugin_version = "0.2"
+    plugin_version = "0.3"
     # 插件作者
     plugin_author = "xcehnz"
     # 作者主页
@@ -43,6 +43,7 @@ class FakeTransfer(_PluginBase):
     # 私有属性
     transfer_his = None
     _transfer_type = 'move'
+    _transfer = None
     _aliyun_host = 'https://openapi.aliyundrive.com'
     _scheduler: Optional[BackgroundScheduler] = None
 
@@ -60,13 +61,14 @@ class FakeTransfer(_PluginBase):
     _aliyun_parent_file_id = ''
 
     def init_plugin(self, config: dict = None):
-        if self._manual_transfer_path:
+        if config.get("manual_transfer_path", None):
             logger.info('只执行单次转移...')
-            self.fake_transfer(self._manual_transfer_path)
+            self.fake_transfer(config.get("manual_transfer_path"))
             return
 
         # 停止现有任务
         self.stop_service()
+        self._transfer = TransferChain()
         self.transfer_his = TransferHistoryOper()
         if config:
             self._enabled = config.get("enabled")
@@ -77,6 +79,8 @@ class FakeTransfer(_PluginBase):
             self._alist_storage_id = config.get("alist_storage_id")
             self._cron = config.get("cron")
             self._manual_transfer_path = config.get("manual_transfer_path")
+            self._aliyun_drive_id = config.get("aliyun_drive_id")
+            self._aliyun_parent_file_id = config.get("aliyun_parent_file_id")
 
         if self._enabled:
             # 定时服务
@@ -396,15 +400,15 @@ class FakeTransfer(_PluginBase):
     def __do_fake_transfer(self, file):
         ths = self.transfer_his.get_by_src(file['path'])
         if ths:
-            logger.error(f'文件{file["path"]}已经转移过, 不再转移')
+            logger.debug(f'文件{file["path"]}已经转移过, 不再转移')
             return
         file_temp_dir = settings.TEMP_PATH.joinpath(os.path.dirname(file['path'])[1:])
-        file_temp_path = file_temp_dir / file['name']
+        file_path = file_temp_dir / file['name']
 
         if not os.path.exists(file_temp_dir):
             os.makedirs(file_temp_dir)
 
-        with open(file_temp_path, 'wb') as f:
+        with open(file_path, 'wb') as f:
             data = {
                 'src': file['path'],
                 'size': file['size'],
@@ -412,68 +416,38 @@ class FakeTransfer(_PluginBase):
             }
             pickle.dump(data, f)
 
-        file_path = Path(file_temp_path)
         file_meta = MetaInfoPath(file_path)
         if not file_meta.name:
             logger.error(f"{file_path.name} 无法识别有效信息")
             return
         mediainfo = self.chain.recognize_media(meta=file_meta)
+        fake_dir = settings.LIBRARY_PATHS[0] / self.__get_dest_dir(mediainfo) / 'fake'
 
-        if not mediainfo:
-            logger.warn(f'未识别到媒体信息，标题：{file_meta.name}')
-            # 新增转移失败历史记录
-            his = self.transfer_his.add_fail(
-                src_path=file['path'],
-                mode=self._transfer_type,
-                meta=file_meta
-            )
-            if self._notify:
-                self.chain.post_message(Notification(
-                    mtype=NotificationType.Manual,
-                    title=f"{file_path.name} 未识别到媒体信息，无法入库！\n"
-                          f"回复：```\n/redo {his.id} [tmdbid]|[类型]\n``` 手动识别转移。"
-                ))
-            return
-        fake_dir = settings.LIBRARY_PATHS[0] / 'fake'
-        if not fake_dir.exists():
-            fake_dir.mkdir(parents=True, exist_ok=True)
-
-        transferinfo = self.chain.transfer(path=file_path, meta=file_meta, mediainfo=mediainfo,
-                                           transfer_type=self._transfer_type, target=fake_dir)
-        if not transferinfo:
-            logger.error(f"文件转移运行失败：{file['path']}")
-            return
-
-        if not transferinfo.success:
-            # 转移失败
-            logger.warn(f"{file_path.name} 入库失败：{transferinfo.message}")
-            # 新增转移失败历史记录
-            self.transfer_his.add_fail(
-                src_path=file['path'],
-                mode=self._transfer_type,
-                # download_hash=download_hash,
-                meta=file_meta,
-                mediainfo=mediainfo,
-                transferinfo=transferinfo
-            )
-            if self._notify:
-                self.chain.post_message(Notification(
-                    mtype=NotificationType.Manual,
-                    title=f"{mediainfo.title_year}{file_meta.season_episode} 入库失败！",
-                    text=f"原因：{transferinfo.message or '未知'}",
-                    image=mediainfo.get_message_image()
-                ))
-            return
-
-        # 新增转移成功历史记录
-        self.transfer_his.add_success(
-            src_path=file['path'],
-            mode=self._transfer_type,
-            # download_hash='download_hash',
-            meta=file_meta,
+        # 开始转移
+        state, errmsg = self._transfer.do_transfer(
+            path=file_path,
             mediainfo=mediainfo,
-            transferinfo=transferinfo
+            target=fake_dir,
+            transfer_type=self._transfer_type,
         )
+        if not state:
+            logger.error(f'转移文件：{file["path"]}，结果：{errmsg}')
+
+    @staticmethod
+    def __get_dest_dir(mediainfo: MediaInfo) -> str:
+        if mediainfo.type == MediaType.MOVIE:
+            return settings.LIBRARY_MOVIE_NAME
+
+        if mediainfo.type == MediaType.TV:
+            # 电视剧
+            if mediainfo.genre_ids \
+                    and set(mediainfo.genre_ids).intersection(set(settings.ANIME_GENREIDS)):
+                # 动漫
+                return settings.LIBRARY_ANIME_NAME or settings.LIBRARY_TV_NAME
+            else:
+                # 电视剧
+                return settings.LIBRARY_TV_NAME
+        return settings.LIBRARY_MOVIE_NAME
 
     def _alist_list(self, path, recursion=True, pwd=None):
         if not self._alist_host:
