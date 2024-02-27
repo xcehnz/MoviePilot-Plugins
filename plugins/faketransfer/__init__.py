@@ -2,10 +2,9 @@ import json
 import os
 import pickle
 from datetime import datetime
-from typing import Any, List, Dict, Tuple, Optional
+from typing import Any, List, Dict, Tuple
 
 import requests
-from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import Depends, Request
 
@@ -19,6 +18,7 @@ from app.db.transferhistory_oper import TransferHistoryOper
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import MediaType
+
 
 class FakeTransfer(_PluginBase):
     # 插件名称
@@ -45,7 +45,6 @@ class FakeTransfer(_PluginBase):
     _transfer_type = 'move'
     _transfer = None
     _aliyun_host = 'https://openapi.aliyundrive.com'
-    _scheduler: Optional[BackgroundScheduler] = None
 
     # 页面配置属性
     _enabled = False
@@ -53,21 +52,15 @@ class FakeTransfer(_PluginBase):
     _alist_host = ''
     _alist_token = ''
     _alist_sync_folder = ''
-    _cron = ''
-    _manual_transfer_path = ''
+    _sync_cron = ''
     #
     _alist_storage_id = 0
     _aliyun_drive_id = ''
     _aliyun_parent_file_id = ''
+    _max_hour = ''
+    _clean_rcon = ''
 
     def init_plugin(self, config: dict = None):
-        if config.get("manual_transfer_path", None):
-            logger.info('只执行单次转移...')
-            self.fake_transfer(config.get("manual_transfer_path"))
-            return
-
-        # 停止现有任务
-        self.stop_service()
         self._transfer = TransferChain()
         self.transfer_his = TransferHistoryOper()
         if config:
@@ -77,36 +70,55 @@ class FakeTransfer(_PluginBase):
             self._alist_token = config.get("alist_token")
             self._alist_sync_folder = config.get("alist_sync_folder")
             self._alist_storage_id = config.get("alist_storage_id")
-            self._cron = config.get("cron")
-            self._manual_transfer_path = config.get("manual_transfer_path")
+            self._sync_cron = config.get("sync_cron")
             self._aliyun_drive_id = config.get("aliyun_drive_id")
             self._aliyun_parent_file_id = config.get("aliyun_parent_file_id")
+            self._max_hour = config.get("max_hour")
+            self._clean_rcon = config.get("clean_rcon")
 
-        if self._enabled:
-            # 定时服务
-            self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-            if self._cron and self._alist_sync_folder:
-                try:
-                    self._scheduler.add_job(func=self.fake_transfer,
-                                            trigger=CronTrigger.from_crontab(self._cron),
-                                            name="虚拟转移")
-                except Exception as err:
-                    logger.error(f"定时任务配置错误：{str(err)}")
-
-            try:
-                self._scheduler.add_job(func=self._aliyun_clean_upload,
-                                        trigger=CronTrigger.from_crontab('* */6 * * *'),
-                                        name="定时清理上传的文件")
-            except Exception as err:
-                logger.error(f"定时任务配置错误：{str(err)}")
-
-            # 启动任务
-            if self._scheduler.get_jobs():
-                self._scheduler.print_jobs()
-                self._scheduler.start()
+            mtp = config.get("manual_transfer_path", None)
+            if mtp:
+                logger.warn('执行单次转移...')
+                self.update_config({
+                    "enabled": self._enabled,
+                    "notify": self._notify,
+                    "alist_host": self._alist_host,
+                    "alist_token": self._alist_token,
+                    "alist_sync_folder": self._alist_sync_folder,
+                    "alist_storage_id": self._alist_storage_id,
+                    "sync_cron": self._sync_cron,
+                    "aliyun_drive_id": self._aliyun_drive_id,
+                    "aliyun_parent_file_id": self._aliyun_parent_file_id,
+                    "max_hour": self._max_hour,
+                    "clean_rcon": self._clean_rcon,
+                })
+                self.fake_transfer(mtp)
 
     def get_state(self) -> bool:
         return self._enabled
+
+    def get_service(self) -> List[Dict[str, Any]]:
+        ret = []
+        if self._enabled:
+            if self._sync_cron:
+                ret.append({
+                    "id": "FakeTransfer",
+                    "name": "虚拟转移",
+                    "trigger": CronTrigger.from_crontab(self._sync_cron),
+                    "func": self.fake_transfer,
+                    "kwargs": {}
+                })
+
+            if self._clean_rcon:
+                ret.append({
+                    "id": "CleanRapidUpload",
+                    "name": "定时清理上传文件",
+                    "trigger": CronTrigger.from_crontab(self._clean_rcon),
+                    "func": self._aliyun_clean_upload,
+                    "kwargs": {}
+                })
+
+        return ret
 
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
@@ -227,7 +239,7 @@ class FakeTransfer(_PluginBase):
                                     {
                                         'component': 'VTextField',
                                         'props': {
-                                            'model': 'cron',
+                                            'model': 'sync_cron',
                                             'label': '目录自动同步周期',
                                             'placeholder': '5位cron表达式，留空关闭'
                                         }
@@ -269,6 +281,40 @@ class FakeTransfer(_PluginBase):
                                             'type': 'info',
                                             'variant': 'tonal',
                                             'text': '注意：以下配置属于高级设置，不清楚的请勿配置。'
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 6
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VTextField',
+                                        'props': {
+                                            'model': 'max_hour',
+                                            'label': '超时时间',
+                                            'placeholder': '加速文件最长保留时间，单位：小时'
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 6
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VTextField',
+                                        'props': {
+                                            'model': 'clean_rcon',
+                                            'label': '加速文件清理周期',
+                                            'placeholder': '5位cron表达式，留空默认6小时'
                                         }
                                     }
                                 ]
@@ -335,11 +381,12 @@ class FakeTransfer(_PluginBase):
             "alist_host": '',
             "alist_token": '',
             "alist_sync_folder": '',
-            "manual_transfer_path": '',
 
             "alist_storage_id": 0,
             "aliyun_drive_id": '',
             "aliyun_parent_file_id": '',
+            "clean_rcon": '',
+            "max_hour": 0,
         }
 
     def get_page(self) -> List[dict]:
@@ -349,14 +396,7 @@ class FakeTransfer(_PluginBase):
         """
         退出插件
         """
-        try:
-            if self._scheduler:
-                self._scheduler.remove_all_jobs()
-                if self._scheduler.running:
-                    self._scheduler.shutdown()
-                self._scheduler = None
-        except Exception as e:
-            logger.error("退出插件失败：%s" % str(e))
+        pass
 
     async def rapid_upload(self, request: Request, _: str = Depends(verify_uri_apikey)):
         data = await request.json()
@@ -385,7 +425,7 @@ class FakeTransfer(_PluginBase):
         })
 
     def fake_transfer(self, path=None):
-        logger.info('开始执行任务...')
+        logger.info(f'开始执行目录{path if path else self._alist_sync_folder}转移任务...')
 
         if path:
             file_list = self._alist_list(path)
