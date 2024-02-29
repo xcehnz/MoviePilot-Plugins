@@ -438,12 +438,13 @@ class FakeTransfer(_PluginBase):
             self.__do_fake_transfer(file)
 
     def __do_fake_transfer(self, file):
-        ths = self.transfer_his.get_by_src(file['path'])
+        file_temp_dir = settings.TEMP_PATH.joinpath(os.path.dirname(file['path'])[1:])
+        file_path = file_temp_dir / file['name']
+
+        ths = self.transfer_his.get_by_src(str(file_path))
         if ths:
             logger.debug(f'文件{file["path"]}已经转移过, 不再转移')
             return
-        file_temp_dir = settings.TEMP_PATH.joinpath(os.path.dirname(file['path'])[1:])
-        file_path = file_temp_dir / file['name']
 
         if not os.path.exists(file_temp_dir):
             os.makedirs(file_temp_dir)
