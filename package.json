@@ -6,5 +6,13 @@
         "icon": "https://raw.githubusercontent.com/xcehnz/MoviePilot-Plugins/main/icons/faketransfer.png",
         "author": "xcehnz",
         "level": 2
+    },
+    "AntiSpoil": {
+        "name": "隐藏剧透",
+        "description": "隐藏剧集信息，防止剧透",
+        "version": "0.1",
+        "icon": "https://raw.githubusercontent.com/xcehnz/MoviePilot-Plugins/main/icons/spoiler-alert.png",
+        "author": "xcehnz",
+        "level": 2
     }
 }
