@@ -16,9 +16,9 @@ class AntiSpoil(_PluginBase):
     # 插件描述
     plugin_desc = "移除媒体库的简介和标题剧透信息。"
     # 插件图标
-    plugin_icon = "refresh2.png"
+    plugin_icon = "spoiler-alert.png"
     # 插件版本
-    plugin_version = "0.1"
+    plugin_version = "0.2"
     # 插件作者
     plugin_author = "xcehnz"
     # 作者主页

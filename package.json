@@ -2,7 +2,7 @@
     "FakeTransfer": {
         "name": "虚拟转移",
         "description": "虚拟转移",
-        "version": "0.3",
+        "version": "0.4",
         "icon": "https://raw.githubusercontent.com/xcehnz/MoviePilot-Plugins/main/icons/faketransfer.png",
         "author": "xcehnz",
         "level": 2
@@ -10,7 +10,7 @@
     "AntiSpoil": {
         "name": "隐藏剧透",
         "description": "隐藏剧集信息，防止剧透",
-        "version": "0.1",
+        "version": "0.2",
         "icon": "https://raw.githubusercontent.com/xcehnz/MoviePilot-Plugins/main/icons/spoiler-alert.png",
         "author": "xcehnz",
         "level": 2

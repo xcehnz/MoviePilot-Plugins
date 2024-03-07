@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+import time
 from datetime import datetime
 from typing import Any, List, Dict, Tuple
 
@@ -28,7 +29,7 @@ class FakeTransfer(_PluginBase):
     # 插件图标
     plugin_icon = "faketransfer.png"
     # 插件版本
-    plugin_version = "0.3"
+    plugin_version = "0.4"
     # 插件作者
     plugin_author = "xcehnz"
     # 作者主页
@@ -45,6 +46,9 @@ class FakeTransfer(_PluginBase):
     _transfer_type = 'move'
     _transfer = None
     _aliyun_host = 'https://openapi.aliyundrive.com'
+    _cache_file_name = '__fake_transfer__'
+    _refresh_token = None
+    _oauth_token_url = ''
 
     # 页面配置属性
     _enabled = False
@@ -57,7 +61,7 @@ class FakeTransfer(_PluginBase):
     _alist_storage_id = 0
     _aliyun_drive_id = ''
     _aliyun_parent_file_id = ''
-    _max_hour = ''
+    _max_hour = 24
     _clean_rcon = ''
 
     def init_plugin(self, config: dict = None):
@@ -73,8 +77,10 @@ class FakeTransfer(_PluginBase):
             self._sync_cron = config.get("sync_cron")
             self._aliyun_drive_id = config.get("aliyun_drive_id")
             self._aliyun_parent_file_id = config.get("aliyun_parent_file_id")
-            self._max_hour = config.get("max_hour")
+            self._max_hour = int(config.get("max_hour"))
             self._clean_rcon = config.get("clean_rcon")
+
+            self._refresh_token = self._get_refresh_token()
 
             mtp = config.get("manual_transfer_path", None)
             if mtp:
@@ -398,6 +404,25 @@ class FakeTransfer(_PluginBase):
         """
         pass
 
+    def _load_token(self):
+        content = self.chain.load_cache(self._cache_file_name)
+        token = None
+        if content:
+            tmp = json.loads(content)
+            expires_in = tmp['expires_in']
+            if int(time.time()) < expires_in:
+                token = tmp['access_token']
+
+        if not token:
+            if not self._refresh_token:
+                self._refresh_token = self._get_refresh_token()
+            resp = self._aliyun_access_token()
+            resp['expires_in'] = resp['expires_in'] + int(time.time())
+            token = resp['access_token']
+            self._refresh_token = resp['refresh_token']
+            self.chain.save_cache(json.dumps(resp), self._cache_file_name)
+        return token
+
     async def rapid_upload(self, request: Request, _: str = Depends(verify_uri_apikey)):
         data = await request.json()
 
@@ -541,6 +566,8 @@ class FakeTransfer(_PluginBase):
         return file_list
 
     def _alist_storage(self, storage_id):
+        if not self._alist_storage_id:
+            return {}
         if not self._alist_host:
             return {}
 
@@ -550,18 +577,17 @@ class FakeTransfer(_PluginBase):
         response = requests.get(url, headers=headers)
         return response.json()
 
-    def _get_access_token(self):
+    def _get_refresh_token(self):
         storage_info = self._alist_storage(self._alist_storage_id)['data']
         if not storage_info:
             return None
         if 'Aliyun' not in storage_info['driver']:
             return None
-        return json.loads(storage_info['addition'])['AccessToken']
+        data = json.loads(storage_info['addition'])
+        self._oauth_token_url = data['oauth_token_url']
+        return data['refresh_token']
 
     def _aliyun_upload(self, file_name, size, sha1):
-        token = self._get_access_token()
-        if not token:
-            return None, {}
         url = f'{self._aliyun_host}/adrive/v1.0/openFile/create'
         payload = json.dumps({
             "drive_id": self._aliyun_drive_id,
@@ -576,21 +602,21 @@ class FakeTransfer(_PluginBase):
         })
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {token}'
+            'Authorization': f'Bearer {self._load_token()}'
         }
 
         response = requests.post(url, headers=headers, data=payload)
 
         if response.status_code == 200:
-            return token, response.json()
-        return None, {}
+            return response.json()
+        return {}
 
     def _aliyun_download_url(self, file_name, size, sha1):
 
         if not self._aliyun_drive_id or not self._aliyun_parent_file_id:
             return None
 
-        token, upload_ret = self._aliyun_upload(file_name, size, sha1)
+        upload_ret = self._aliyun_upload(file_name, size, sha1)
         if not upload_ret:
             return None
         file_id = upload_ret['file_id']
@@ -602,7 +628,7 @@ class FakeTransfer(_PluginBase):
         })
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {token}'
+            'Authorization': f'Bearer {self._load_token()}'
         }
 
         response = requests.post(url, headers=headers, data=payload)
@@ -620,7 +646,7 @@ class FakeTransfer(_PluginBase):
         })
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {self._get_access_token()}'
+            'Authorization': f'Bearer {self._load_token()}'
         }
         response = requests.post(url, headers=headers, data=payload)
         if response.status_code != 200:
@@ -640,7 +666,7 @@ class FakeTransfer(_PluginBase):
             created_at = datetime.strptime(item['created_at'], "%Y-%m-%dT%H:%M:%S.%fZ")
             hours = int((datetime.now() - created_at).total_seconds() / 3600)
             logger.debug(f"文件{item['name']} 创建时间 {item['created_at']}")
-            if hours >= 24:
+            if hours >= self._max_hour:
                 ret = self._delete_file(item['file_id'])
                 logger.warn(f"文件{item['name']} 创建超过{hours}小时, 删除{'成功' if ret else '失败'}")
 
@@ -652,9 +678,24 @@ class FakeTransfer(_PluginBase):
         })
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {self._get_access_token()}'
+            'Authorization': f'Bearer {self._load_token()}'
         }
         response = requests.post(url, headers=headers, data=payload)
         if response.status_code == 200:
             return True
         return False
+
+    def _aliyun_access_token(self):
+        if not self._refresh_token:
+            return None
+        payload = json.dumps({
+            "grant_type": "refresh_token",
+            "refresh_token": self._refresh_token
+        })
+        headers = {
+            'Content-Type': 'application/json'
+        }
+        response = requests.post(self._oauth_token_url, headers=headers, data=payload)
+        if response.status_code == 200:
+            return response.json()
+        return None
