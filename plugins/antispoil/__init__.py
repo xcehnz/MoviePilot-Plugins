@@ -3,11 +3,12 @@ import re
 import time
 from typing import Any, List, Dict, Tuple
 
+from app.core.context import MediaInfo
 from app.core.event import eventmanager, Event
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import TransferInfo
-from app.schemas.types import EventType
+from app.schemas.types import EventType, MediaType
 
 
 class AntiSpoil(_PluginBase):
@@ -119,6 +120,10 @@ class AntiSpoil(_PluginBase):
 
         event_info: dict = event.event_data
         if not event_info:
+            return
+
+        mediainfo: MediaInfo = event_info.get("mediainfo")
+        if mediainfo.type != MediaType.TV:
             return
 
         if self._delay:

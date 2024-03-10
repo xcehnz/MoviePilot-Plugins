@@ -4,6 +4,6 @@ MoviePilot三方插件市场：https://github.com/xcehnz/MoviePilot-Plugins
 
 
 ### 插件新增
-站点数据统计-0.3
+虚拟转移-0.4
 
-隐藏剧透-0.1
+隐藏剧透-0.2
