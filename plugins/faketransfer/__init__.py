@@ -1,24 +1,25 @@
 import json
 import os
 import pickle
+import queue
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, List, Dict, Tuple
 
+import pytz
 import requests
+from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import Depends, Request
 
 from app import schemas
 from app.core.config import settings
 from app.chain.transfer import TransferChain
-from app.core.context import MediaInfo
-from app.core.metainfo import MetaInfoPath
 from app.core.security import verify_uri_apikey
 from app.db.transferhistory_oper import TransferHistoryOper
 from app.log import logger
 from app.plugins import _PluginBase
-from app.schemas.types import MediaType
 
 
 class FakeTransfer(_PluginBase):
@@ -29,7 +30,7 @@ class FakeTransfer(_PluginBase):
     # 插件图标
     plugin_icon = "faketransfer.png"
     # 插件版本
-    plugin_version = "0.4"
+    plugin_version = "0.5"
     # 插件作者
     plugin_author = "xcehnz"
     # 作者主页
@@ -57,6 +58,7 @@ class FakeTransfer(_PluginBase):
     _alist_token = ''
     _alist_sync_folder = ''
     _sync_cron = ''
+    _fake_temp_path = None
     #
     _alist_storage_id = 0
     _aliyun_drive_id = ''
@@ -73,6 +75,7 @@ class FakeTransfer(_PluginBase):
             self._alist_host = config.get("alist_host")
             self._alist_token = config.get("alist_token")
             self._alist_sync_folder = config.get("alist_sync_folder")
+            self._fake_temp_path = config.get("fake_temp_path")
             self._alist_storage_id = config.get("alist_storage_id")
             self._sync_cron = config.get("sync_cron")
             self._aliyun_drive_id = config.get("aliyun_drive_id")
@@ -81,24 +84,31 @@ class FakeTransfer(_PluginBase):
             self._clean_rcon = config.get("clean_rcon")
 
             self._refresh_token = self._get_refresh_token()
+            self.update_config({
+                "enabled": self._enabled,
+                "notify": self._notify,
+                "alist_host": self._alist_host,
+                "alist_token": self._alist_token,
+                "alist_sync_folder": self._alist_sync_folder,
+                "alist_storage_id": self._alist_storage_id,
+                "fake_temp_path": self._fake_temp_path,
+                "sync_cron": self._sync_cron,
+                "aliyun_drive_id": self._aliyun_drive_id,
+                "aliyun_parent_file_id": self._aliyun_parent_file_id,
+                "max_hour": self._max_hour,
+                "clean_rcon": self._clean_rcon,
+            })
 
             mtp = config.get("manual_transfer_path", None)
             if mtp:
                 logger.warn('执行单次转移...')
-                self.update_config({
-                    "enabled": self._enabled,
-                    "notify": self._notify,
-                    "alist_host": self._alist_host,
-                    "alist_token": self._alist_token,
-                    "alist_sync_folder": self._alist_sync_folder,
-                    "alist_storage_id": self._alist_storage_id,
-                    "sync_cron": self._sync_cron,
-                    "aliyun_drive_id": self._aliyun_drive_id,
-                    "aliyun_parent_file_id": self._aliyun_parent_file_id,
-                    "max_hour": self._max_hour,
-                    "clean_rcon": self._clean_rcon,
-                })
-                self.fake_transfer(mtp)
+                scheduler = BackgroundScheduler(timezone=settings.TZ)
+                scheduler.add_job(func=self._fake_transfer, trigger='date', args=[mtp],
+                                  run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3))
+                if scheduler.get_jobs():
+                    # 启动服务
+                    scheduler.print_jobs()
+                    scheduler.start()
 
     def get_state(self) -> bool:
         return self._enabled
@@ -111,7 +121,7 @@ class FakeTransfer(_PluginBase):
                     "id": "FakeTransfer",
                     "name": "虚拟转移",
                     "trigger": CronTrigger.from_crontab(self._sync_cron),
-                    "func": self.fake_transfer,
+                    "func": self._fake_transfer,
                     "kwargs": {}
                 })
 
@@ -265,6 +275,23 @@ class FakeTransfer(_PluginBase):
                                             'model': 'manual_transfer_path',
                                             'label': '手动同步目录',
                                             'placeholder': '单次转移目录，留空不转移'
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 6
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VTextField',
+                                        'props': {
+                                            'model': 'fake_temp_path',
+                                            'label': '临时目录',
+                                            'placeholder': '临时目录'
                                         }
                                     }
                                 ]
@@ -449,73 +476,53 @@ class FakeTransfer(_PluginBase):
             "url": dl_url
         })
 
-    def fake_transfer(self, path=None):
-        logger.info(f'开始执行目录{path if path else self._alist_sync_folder}转移任务...')
-
-        if path:
-            file_list = self._alist_list(path)
+    def _fake_transfer(self, path=None):
+        temp_path = self._fake_temp_path
+        if not temp_path:
+            temp_path = settings.TEMP_PATH / 'fake'
         else:
-            file_list = self._alist_list(self._alist_sync_folder)
+            temp_path = Path(self._fake_temp_path)
+
+        logger.info(f'开始执行目录{path if path else self._alist_sync_folder}转移任务...')
+        if not path:
+            path = self._alist_sync_folder
+
+        file_list = self._alist_list(path)
         if not file_list:
             return
 
-        for file in file_list:
-            self.__do_fake_transfer(file)
+        for file_root, files in file_list.items():
+            file_temp_dir = temp_path.joinpath(file_root[1:])
+            if not os.path.exists(file_temp_dir):
+                os.makedirs(file_temp_dir)
 
-    def __do_fake_transfer(self, file):
-        file_temp_dir = settings.TEMP_PATH.joinpath(os.path.dirname(file['path'])[1:])
-        file_path = file_temp_dir / file['name']
-
-        ths = self.transfer_his.get_by_src(str(file_path))
-        if ths:
-            logger.debug(f'文件{file["path"]}已经转移过, 不再转移')
-            return
-
-        if not os.path.exists(file_temp_dir):
-            os.makedirs(file_temp_dir)
-
-        with open(file_path, 'wb') as f:
-            data = {
-                'src': file['path'],
-                'size': file['size'],
-                'sha1': file['sha1'],
-            }
-            pickle.dump(data, f)
-
-        file_meta = MetaInfoPath(file_path)
-        if not file_meta.name:
-            logger.error(f"{file_path.name} 无法识别有效信息")
-            return
-        mediainfo = self.chain.recognize_media(meta=file_meta)
-        fake_dir = settings.LIBRARY_PATHS[0] / self.__get_dest_dir(mediainfo) / 'fake'
-
-        # 开始转移
-        state, errmsg = self._transfer.do_transfer(
-            path=file_path,
-            mediainfo=mediainfo,
-            target=fake_dir,
-            transfer_type=self._transfer_type,
-        )
-        if not state:
-            logger.error(f'转移文件：{file["path"]}，结果：{errmsg}')
-
-    @staticmethod
-    def __get_dest_dir(mediainfo: MediaInfo) -> str:
-        if mediainfo.type == MediaType.MOVIE:
-            return settings.LIBRARY_MOVIE_NAME
-
-        if mediainfo.type == MediaType.TV:
-            # 电视剧
-            if mediainfo.genre_ids \
-                    and set(mediainfo.genre_ids).intersection(set(settings.ANIME_GENREIDS)):
-                # 动漫
-                return settings.LIBRARY_ANIME_NAME or settings.LIBRARY_TV_NAME
+            file_to_tr = []
+            transfer_path = file_temp_dir
+            for file in files:
+                file_path = file_temp_dir / file['name']
+                ths = self.transfer_his.get_by_src(str(file_path))
+                if not ths:
+                    file_to_tr.append(file_path)
+                    with open(file_path, 'wb') as f:
+                        data = {
+                            'src': file['path'],
+                            'size': file['size'],
+                            'sha1': file['sha1'],
+                        }
+                        pickle.dump(data, f)
+            if file_to_tr:
+                if len(file_to_tr) == 1:
+                    transfer_path = file_to_tr[0]
             else:
-                # 电视剧
-                return settings.LIBRARY_TV_NAME
-        return settings.LIBRARY_MOVIE_NAME
+                logger.warn(f'目录{transfer_path}下的文件，没有需要转移的文件')
+                continue
+            logger.info(f'开始转移目录/文件：{transfer_path}')
+            state, errmsg = self._transfer.do_transfer(path=transfer_path, transfer_type=self._transfer_type)
 
-    def _alist_list(self, path, recursion=True, pwd=None):
+            if not state:
+                logger.error(f'转移文件：{transfer_path}，失败：{errmsg}')
+
+    def _alist_list(self, path, pwd=None):
         if not self._alist_host:
             return {}
 
@@ -539,31 +546,36 @@ class FakeTransfer(_PluginBase):
             response = requests.post(url, headers=headers, data=json.dumps(data))
             return response.json()
 
-        file_list = []
+        folders_with_files = dict()
 
         def list_all(root):
-
-            data = list_dir(root)
-            if not data['data']['content']:
-                return
-            for item in data['data']['content']:
-                if item['is_dir']:
-                    if recursion:
-                        list_all(root + "/" + item['name'])
-                else:
-                    if os.path.splitext(item['name'])[-1].lower() not in settings.RMT_MEDIAEXT:
-                        continue
-                    hash_info = item.get('hash_info') or {}
-                    file_info = {
-                        'name': item['name'],
-                        'size': item['size'],
-                        'sha1': hash_info.get('sha1', None),
-                        'path': f'{root}/{item["name"]}',
-                    }
-                    file_list.append(file_info)
+            q = queue.Queue()
+            q.put(root)
+            while not q.empty():
+                cur_path = q.get()
+                data = list_dir(cur_path)
+                if not data['data']['content']:
+                    return
+                for item in data['data']['content']:
+                    if item['is_dir']:
+                        q.put(f'{cur_path}/{item["name"]}')
+                    else:
+                        if os.path.splitext(item['name'])[-1].lower() not in settings.RMT_MEDIAEXT:
+                            continue
+                        hash_info = item.get('hash_info') or {}
+                        file_info = {
+                            'name': item['name'],
+                            'size': item['size'],
+                            'sha1': hash_info.get('sha1', None),
+                            'path': f'{root}/{item["name"]}',
+                        }
+                        if cur_path in folders_with_files:
+                            folders_with_files[cur_path].append(file_info)
+                        else:
+                            folders_with_files[cur_path] = [file_info]
 
         list_all(path)
-        return file_list
+        return folders_with_files
 
     def _alist_storage(self, storage_id):
         if not self._alist_storage_id:
