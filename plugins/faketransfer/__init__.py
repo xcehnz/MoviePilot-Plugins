@@ -682,7 +682,7 @@ class FakeTransfer(_PluginBase):
             "parent_file_id": self._aliyun_parent_file_id,
             "type": "file",
             "name": file_name,
-            "check_name_mode": "auto_rename",
+            "check_name_mode": "refuse",
             "size": size,
             "content_hash": sha1,
             "content_hash_name": "sha1",
