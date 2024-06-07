@@ -721,8 +721,9 @@ class FakeTransfer(_PluginBase):
 
         response = requests.post(self._get_download_url, headers=headers, data=payload)
         if response.status_code == 200:
-            logger.info(f'获取文件下载地址：{response.json()}')
-            return response.json()['url']
+            ret = response.json()
+            logger.info(f'获取文件下载地址：{ret}')
+            return ret.get('cdn_url') if 'cdn_url' in ret else ret.get('url')
         return None
 
     def _aliyun_file_list(self):
