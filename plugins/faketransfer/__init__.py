@@ -518,11 +518,12 @@ class FakeTransfer(_PluginBase):
             resp = self._aliyun_access_token(refresh_token, new_rf)
             resp['expires_in'] = resp['expires_in'] + int(time.time())
             token = resp['access_token']
-            self._refresh_token = resp['refresh_token']
             if new_rf:
                 new_config = self.get_config()
-                new_config.update({'dl_refresh_token': refresh_token})
+                new_config.update({'dl_refresh_token': resp['refresh_token']})
                 self.update_config(new_config)
+            else:
+                self._refresh_token = resp['refresh_token']
             self.chain.save_cache(json.dumps(resp), cache_file)
         return token
 
