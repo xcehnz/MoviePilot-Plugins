@@ -28,9 +28,9 @@ class FakeTransfer(_PluginBase):
     # 插件描述
     plugin_desc = "虚拟转移"
     # 插件图标
-    plugin_icon = "faketransfer.png"
+    plugin_icon = "https://raw.githubusercontent.com/xcehnz/MoviePilot-Plugins/main/icons/faketransfer.png"
     # 插件版本
-    plugin_version = "0.5"
+    plugin_version = "0.7"
     # 插件作者
     plugin_author = "xcehnz"
     # 作者主页
