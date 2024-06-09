@@ -28,9 +28,9 @@ class FakeTransfer(_PluginBase):
     # 插件描述
     plugin_desc = "虚拟转移"
     # 插件图标
-    plugin_icon = "https://raw.githubusercontent.com/xcehnz/MoviePilot-Plugins/main/icons/faketransfer.png"
+    plugin_icon = "faketransfer.png"
     # 插件版本
-    plugin_version = "0.6"
+    plugin_version = "0.5"
     # 插件作者
     plugin_author = "xcehnz"
     # 作者主页
@@ -52,9 +52,6 @@ class FakeTransfer(_PluginBase):
     _oauth_token_url = ''
 
     # 页面配置属性
-    _dl_refresh_token = ''
-    _get_download_url = ''
-    _dl_token_url = ''
     _enabled = False
     _notify = False
     _alist_host = ''
@@ -86,11 +83,8 @@ class FakeTransfer(_PluginBase):
             self._max_hour = int(config.get("max_hour"))
             self._clean_rcon = config.get("clean_rcon")
 
-            self._get_download_url = config.get("get_download_url")
-            self._dl_token_url = config.get("dl_token_url")
-            self._dl_refresh_token = config.get("dl_refresh_token")
             self._refresh_token = self._get_refresh_token()
-            new_config = {
+            self.update_config({
                 "enabled": self._enabled,
                 "notify": self._notify,
                 "alist_host": self._alist_host,
@@ -98,17 +92,12 @@ class FakeTransfer(_PluginBase):
                 "alist_sync_folder": self._alist_sync_folder,
                 "alist_storage_id": self._alist_storage_id,
                 "fake_temp_path": self._fake_temp_path,
-                "get_download_url": self._get_download_url,
-                "dl_token_url": self._dl_token_url,
                 "sync_cron": self._sync_cron,
                 "aliyun_drive_id": self._aliyun_drive_id,
                 "aliyun_parent_file_id": self._aliyun_parent_file_id,
                 "max_hour": self._max_hour,
                 "clean_rcon": self._clean_rcon,
-            }
-            if self._dl_refresh_token:
-                new_config.update({'dl_refresh_token': self._dl_refresh_token})
-            self.update_config(new_config)
+            })
 
             mtp = config.get("manual_transfer_path", None)
             if mtp:
@@ -414,57 +403,6 @@ class FakeTransfer(_PluginBase):
                                     }
                                 ]
                             },
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 6
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'get_download_url',
-                                            'label': '获取下载连接地址',
-                                            'placeholder': '获取下载连接地址'
-                                        }
-                                    }
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 6
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'dl_token_url',
-                                            'label': '获取下载token url',
-                                            'placeholder': '获取下载token url'
-                                        }
-                                    }
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 6
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'dl_refresh_token',
-                                            'label': '下载refresh_token',
-                                            'placeholder': '下载refresh_token'
-                                        }
-                                    }
-                                ]
-                            },
                         ]
                     }
                 ]
@@ -478,8 +416,6 @@ class FakeTransfer(_PluginBase):
             "alist_sync_folder": '',
 
             "alist_storage_id": 0,
-            "get_download_url": '',
-            "dl_token_url": '',
             "aliyun_drive_id": '',
             "aliyun_parent_file_id": '',
             "clean_rcon": '',
@@ -495,11 +431,8 @@ class FakeTransfer(_PluginBase):
         """
         pass
 
-    def _load_token(self, new_rf=False):
-        cache_file = self._cache_file_name
-        if new_rf:
-            cache_file = self._cache_file_name + 'new__'
-        content = self.chain.load_cache(cache_file)
+    def _load_token(self):
+        content = self.chain.load_cache(self._cache_file_name)
         token = None
         if content:
             tmp = json.loads(content)
@@ -508,23 +441,13 @@ class FakeTransfer(_PluginBase):
                 token = tmp['access_token']
 
         if not token:
-            if new_rf:
-                refresh_token = self.get_config().get('dl_refresh_token')
-            else:
-                if not self._refresh_token:
-                    refresh_token = self._get_refresh_token()
-                else:
-                    refresh_token = self._refresh_token
-            resp = self._aliyun_access_token(refresh_token, new_rf)
+            if not self._refresh_token:
+                self._refresh_token = self._get_refresh_token()
+            resp = self._aliyun_access_token()
             resp['expires_in'] = resp['expires_in'] + int(time.time())
             token = resp['access_token']
-            if new_rf:
-                new_config = self.get_config()
-                new_config.update({'dl_refresh_token': resp['refresh_token']})
-                self.update_config(new_config)
-            else:
-                self._refresh_token = resp['refresh_token']
-            self.chain.save_cache(json.dumps(resp), cache_file)
+            self._refresh_token = resp['refresh_token']
+            self.chain.save_cache(json.dumps(resp), self._cache_file_name)
         return token
 
     async def rapid_upload(self, request: Request, _: str = Depends(verify_uri_apikey)):
@@ -709,22 +632,20 @@ class FakeTransfer(_PluginBase):
         if not upload_ret:
             return None
         file_id = upload_ret['file_id']
+        url = f"{self._aliyun_host}/adrive/v1.0/openFile/getDownloadUrl"
 
         payload = json.dumps({
             "drive_id": self._aliyun_drive_id,
-            'expire_sec': 115100,
             "file_id": file_id
         })
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {self._load_token(new_rf=True)}'
+            'Authorization': f'Bearer {self._load_token()}'
         }
 
-        response = requests.post(self._get_download_url, headers=headers, data=payload)
+        response = requests.post(url, headers=headers, data=payload)
         if response.status_code == 200:
-            ret = response.json()
-            logger.info(f'获取文件下载地址：{ret}')
-            return ret.get('cdn_url') if 'cdn_url' in ret else ret.get('url')
+            return response.json()['url']
         return None
 
     def _aliyun_file_list(self):
@@ -776,21 +697,17 @@ class FakeTransfer(_PluginBase):
             return True
         return False
 
-    def _aliyun_access_token(self, refresh_token, new_nf=False, ):
+    def _aliyun_access_token(self):
         if not self._refresh_token:
             return None
         payload = json.dumps({
             "grant_type": "refresh_token",
-            "refresh_token": refresh_token
+            "refresh_token": self._refresh_token
         })
         headers = {
             'Content-Type': 'application/json'
         }
-        if new_nf:
-            url = self._dl_token_url
-        else:
-            url = self._oauth_token_url
-        response = requests.post(url, headers=headers, data=payload)
+        response = requests.post(self._oauth_token_url, headers=headers, data=payload)
         if response.status_code == 200:
             return response.json()
         return None
