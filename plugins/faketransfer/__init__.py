@@ -16,7 +16,7 @@ from fastapi import Depends, Request
 from app import schemas
 from app.core.config import settings
 from app.chain.transfer import TransferChain
-from app.core.security import verify_uri_apikey
+from app.core.security import verify_apikey
 from app.db.transferhistory_oper import TransferHistoryOper
 from app.log import logger
 from app.plugins import _PluginBase
@@ -30,7 +30,7 @@ class FakeTransfer(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/xcehnz/MoviePilot-Plugins/main/icons/faketransfer.png"
     # 插件版本
-    plugin_version = "0.7"
+    plugin_version = "0.8"
     # 插件作者
     plugin_author = "xcehnz"
     # 作者主页
@@ -450,7 +450,7 @@ class FakeTransfer(_PluginBase):
             self.chain.save_cache(json.dumps(resp), self._cache_file_name)
         return token
 
-    async def rapid_upload(self, request: Request, _: str = Depends(verify_uri_apikey)):
+    async def rapid_upload(self, request: Request, _: str = Depends(verify_apikey)):
         data = await request.json()
 
         file_name = data.get("file_name", None)
